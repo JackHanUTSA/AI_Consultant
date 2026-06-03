@@ -12,7 +12,7 @@ A Python CLI chat agent that conducts admissions consulting conversations with s
 python main.py
 ```
 
-Requires `ANTHROPIC_API_KEY` in `.env` or the environment. The student is resolved by name on every run; entering the same name resumes the case from `consultant.db`.
+Set `PROVIDER` in `.env` to `anthropic` (default) or `openai`, and provide the matching API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). The student is resolved by name on every run; entering the same name resumes the case from `consultant.db`.
 
 ## Architecture
 
@@ -38,4 +38,4 @@ A standard Anthropic tool-use loop. Files in dependency order:
 
 ## Model
 
-`claude-sonnet-4-6`, set as `MODEL` in `consultant/agent.py`. Swap models there; don't add a config layer for a single constant.
+Per-provider constants live in `consultant/agent.py`: `ANTHROPIC_MODEL` (`claude-sonnet-4-6`) and `OPENAI_MODEL` (`gpt-4o`). Swap models there; don't add a config layer for two constants. The OpenAI path goes through `_run_turn_openai`, which converts messages in/out of OpenAI's chat-completions tool-calling format — persistent storage stays in Anthropic-shaped content blocks so a case is the same shape regardless of which backend produced it.

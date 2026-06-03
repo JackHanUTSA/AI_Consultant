@@ -12,9 +12,18 @@ from consultant.db import Database
 def main() -> None:
     load_dotenv()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("Error: ANTHROPIC_API_KEY not set.")
-        print("Copy .env.example to .env and add your Anthropic API key.")
+    provider = (os.environ.get("PROVIDER") or "anthropic").lower()
+    if provider == "openai":
+        required_key = "OPENAI_API_KEY"
+    elif provider == "anthropic":
+        required_key = "ANTHROPIC_API_KEY"
+    else:
+        print(f"Error: PROVIDER={provider!r} is invalid. Use 'anthropic' or 'openai'.")
+        sys.exit(1)
+
+    if not os.environ.get(required_key):
+        print(f"Error: {required_key} not set (PROVIDER={provider}).")
+        print("Copy .env.example to .env and fill in the relevant key.")
         sys.exit(1)
 
     root = Path(__file__).parent
