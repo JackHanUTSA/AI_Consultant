@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import os
 
-from consultant.prompts import SYSTEM_PROMPT
-from consultant.tools import TOOLS, dispatch_tool
+from consultant.prompts import system_prompt_for
+from consultant.tools import dispatch_tool, tools_for_role
 
 
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
@@ -21,10 +21,16 @@ MAX_TOKENS = 4096
 
 
 class ConsultantAgent:
-    def __init__(self, student: dict, db):
+    def __init__(self, student: dict, db, role: str = "customer", actor_name: str | None = None):
         self.student = student
         self.db = db
-        self.messages: list = student["conversation"]
+        self.role = role
+        self.actor_name = actor_name
+        # Customer chats persist on the case row. Staff sessions are operational
+        # and ephemeral, so they never clobber a student's real conversation.
+        self.persist_conversation = role == "customer"
+        self.messages: list = student["conversation"] if self.persist_conversation else []
+        self.tools = tools_for_role(role)
         self.provider = (os.environ.get("PROVIDER") or "anthropic").lower()
 
         if self.provider == "openai":
@@ -38,10 +44,25 @@ class ConsultantAgent:
                 f"Unknown PROVIDER={self.provider!r}. Use 'anthropic' or 'openai'."
             )
 
+    def _visible_profile(self) -> dict:
+        """Profile as the agent should see it. Internal (``_``-prefixed) keys are
+        hidden from the customer-facing agent so staff notes never leak."""
+        profile = self.student.get("profile") or {}
+        if self.role == "customer":
+            return {k: v for k, v in profile.items() if not k.startswith("_")}
+        return profile
+
     def _profile_block_text(self) -> str:
-        profile_str = json.dumps(self.student["profile"], indent=2)
+        if not self.student.get("id"):
+            return "<active_case>(no case open — use open_case to select one)</active_case>"
+        profile_str = json.dumps(self._visible_profile(), indent=2)
+        if self.role == "customer":
+            return (
+                f"<student_name>{self.student['name']}</student_name>\n"
+                f"<current_profile>\n{profile_str}\n</current_profile>"
+            )
         return (
-            f"<student_name>{self.student['name']}</student_name>\n"
+            f"<active_case>{self.student['name']}</active_case>\n"
             f"<current_profile>\n{profile_str}\n</current_profile>"
         )
 
@@ -49,22 +70,25 @@ class ConsultantAgent:
         return [
             {
                 "type": "text",
-                "text": SYSTEM_PROMPT,
+                "text": system_prompt_for(self.role),
                 "cache_control": {"type": "ephemeral"},
             },
             {"type": "text", "text": self._profile_block_text()},
         ]
 
     def _openai_system_text(self) -> str:
-        return SYSTEM_PROMPT + "\n\n" + self._profile_block_text()
+        return system_prompt_for(self.role) + "\n\n" + self._profile_block_text()
 
     def _run_turn(self) -> None:
         if self.provider == "openai":
             self._run_turn_openai()
         else:
             self._run_turn_anthropic()
-        self.db.save_conversation(self.student["id"], self.messages)
-        self.db.save_profile(self.student["id"], self.student["profile"])
+        # Persist only the customer's case conversation. Staff edits to the active
+        # case persist inside the tools themselves, so nothing is lost there.
+        if self.persist_conversation and self.student.get("id"):
+            self.db.save_conversation(self.student["id"], self.messages)
+            self.db.save_profile(self.student["id"], self.student["profile"])
 
     def _run_turn_anthropic(self) -> None:
         while True:
@@ -72,7 +96,7 @@ class ConsultantAgent:
                 model=ANTHROPIC_MODEL,
                 max_tokens=MAX_TOKENS,
                 system=self._anthropic_system_blocks(),
-                tools=TOOLS,
+                tools=self.tools,
                 messages=self.messages,
             )
 
@@ -88,7 +112,7 @@ class ConsultantAgent:
                 for block in response.content:
                     if block.type == "tool_use":
                         result = dispatch_tool(
-                            block.name, block.input, self.student, self.db
+                            block.name, block.input, self.student, self.db, self.role
                         )
                         tool_results.append(
                             {
@@ -103,7 +127,7 @@ class ConsultantAgent:
             break
 
     def _run_turn_openai(self) -> None:
-        oai_tools = [_to_openai_tool(t) for t in TOOLS]
+        oai_tools = [_to_openai_tool(t) for t in self.tools]
         while True:
             oai_messages = _to_openai_messages(
                 self.messages, system_text=self._openai_system_text()
@@ -147,7 +171,7 @@ class ConsultantAgent:
                     except json.JSONDecodeError:
                         args = {}
                     result = dispatch_tool(
-                        tc.function.name, args, self.student, self.db
+                        tc.function.name, args, self.student, self.db, self.role
                     )
                     tool_results.append(
                         {
@@ -163,12 +187,15 @@ class ConsultantAgent:
 
     def chat_loop(self) -> None:
         if not self.messages:
-            self.messages.append(
-                {
-                    "role": "user",
-                    "content": "Hi — let's begin the consultation. I'm ready when you are.",
-                }
-            )
+            if self.role == "customer":
+                opener = "Hi — let's begin the consultation. I'm ready when you are."
+            else:
+                who = self.actor_name or self.role
+                opener = (
+                    f"Staff session started ({self.role}: {who}). "
+                    "Briefly tell me what you can help with, then wait for my instructions."
+                )
+            self.messages.append({"role": "user", "content": opener})
             self._run_turn()
 
         while True:

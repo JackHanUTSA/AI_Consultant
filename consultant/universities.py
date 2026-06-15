@@ -117,6 +117,40 @@ class UniversityDB:
         rec = self._load().get(slug)
         return self._trim(rec) if rec else None
 
+    def refresh(self, slug: str) -> dict:
+        """(Re)download one record from the source. Adds it if new. Admin-only."""
+        recs = self._load()
+        url = f"{RAW_BASE}/{slug}.json"
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                data = resp.read()
+        except Exception as exc:  # network / 404
+            return {"ok": False, "slug": slug, "error": str(exc)}
+        rec = json.loads(data.decode("utf-8"))
+        (self.cache_dir / f"{slug}.json").write_bytes(data)
+        was_new = slug not in recs
+        recs[slug] = rec
+        verification = rec.get("verification") or {}
+        return {
+            "ok": True,
+            "slug": slug,
+            "added": was_new,
+            "count": len(recs),
+            "confidence": verification.get("confidence"),
+            "last_verified_at": verification.get("last_verified_at"),
+        }
+
+    def remove(self, slug: str) -> dict:
+        """Drop one record from the knowledge base and delete its cache file."""
+        recs = self._load()
+        if slug not in recs:
+            return {"ok": False, "slug": slug, "error": "not in knowledge base"}
+        del recs[slug]
+        path = self.cache_dir / f"{slug}.json"
+        if path.exists():
+            path.unlink()
+        return {"ok": True, "slug": slug, "count": len(recs)}
+
     def search(
         self,
         major: str | None = None,

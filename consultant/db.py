@@ -1,4 +1,6 @@
 """SQLite persistence for student cases."""
+from __future__ import annotations
+
 import json
 import sqlite3
 from datetime import datetime
@@ -27,24 +29,40 @@ class Database:
 
     def list_students(self) -> list[dict[str, Any]]:
         cur = self.conn.execute(
-            "SELECT name, updated_at FROM students ORDER BY updated_at DESC"
+            "SELECT name, updated_at, profile_json FROM students ORDER BY updated_at DESC"
         )
-        return [dict(r) for r in cur.fetchall()]
+        out: list[dict[str, Any]] = []
+        for r in cur.fetchall():
+            d = dict(r)
+            try:
+                profile_keys = len(json.loads(d.pop("profile_json")))
+            except (ValueError, TypeError):
+                profile_keys = 0
+            d["profile_keys"] = profile_keys
+            out.append(d)
+        return out
 
-    def get_or_create_student(self, name: str, students_root: Path) -> dict[str, Any]:
+    def get_student(self, name: str) -> dict[str, Any] | None:
+        """Load an existing case by name. Returns None if it doesn't exist."""
         row = self.conn.execute(
             "SELECT * FROM students WHERE name = ?", (name,)
         ).fetchone()
-        if row:
-            d = dict(row)
-            return {
-                "id": d["id"],
-                "name": d["name"],
-                "folder": d["folder"],
-                "profile": json.loads(d["profile_json"]),
-                "conversation": json.loads(d["conversation_json"]),
-                "is_new": False,
-            }
+        if not row:
+            return None
+        d = dict(row)
+        return {
+            "id": d["id"],
+            "name": d["name"],
+            "folder": d["folder"],
+            "profile": json.loads(d["profile_json"]),
+            "conversation": json.loads(d["conversation_json"]),
+            "is_new": False,
+        }
+
+    def get_or_create_student(self, name: str, students_root: Path) -> dict[str, Any]:
+        existing = self.get_student(name)
+        if existing:
+            return existing
 
         slug = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
         folder = students_root / slug

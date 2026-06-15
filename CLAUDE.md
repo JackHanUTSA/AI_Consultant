@@ -12,18 +12,33 @@ A Python CLI chat agent that conducts admissions consulting conversations with s
 python main.py
 ```
 
-Set `PROVIDER` in `.env` to `anthropic` (default) or `openai`, and provide the matching API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). The student is resolved by name on every run; entering the same name resumes the case from `consultant.db`.
+Set `PROVIDER` in `.env` to `anthropic` (default) or `openai`, and provide the matching API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). On every run you enter a name and pick a **role** (plain prompt, no auth). For `customer` the student is resolved by name and the same name resumes the case from `consultant.db`.
+
+## Roles
+
+Three session roles, chosen at startup. The role drives three things: which **system prompt** is used (`prompts.system_prompt_for`), which **tools** the model can see and call (`tools.tools_for_role`, re-checked in `dispatch_tool`), and whether the **conversation persists**.
+
+- **customer** (default) — talks to the warm consulting agent about *their own* case. Tools: `update_profile`, `save_artifact`, `list/read_artifact`, university KB reads. Conversation persists to the case row, as before.
+- **supervisor** — analytical staff agent that can open and manage *any* case: `list_cases`, `open_case`, plus `delete_profile_keys`, `add_internal_note`, `delete_artifact` on top of the customer toolset.
+- **admin** — everything supervisor has **plus** knowledge-base administration: `refresh_university` (add/update a record from goal-kicker) and `remove_university`.
+
+Two invariants worth protecting:
+
+- **Staff sessions are ephemeral.** `ConsultantAgent.persist_conversation` is true only for `customer`, so a supervisor/admin chat never overwrites a student's saved `conversation_json`. Their profile/artifact/KB *edits* still persist because the tools write through `db`/disk directly.
+- **Internal notes never leak to the customer agent.** Notes are stored on the profile under `_internal_notes`; `_visible_profile()` strips all `_`-prefixed keys before building the `<current_profile>` block for the customer role. Don't surface underscore-prefixed keys to customers, and store any other staff-only field with a leading `_`.
+
+Staff may run with **no case open** (blank at the case prompt). Case-specific tools return "No case is open…" until `open_case` succeeds; the per-turn block then reads `<active_case>` instead of `<student_name>`.
 
 ## Architecture
 
 A standard Anthropic tool-use loop. Files in dependency order:
 
-1. `main.py` — boots SQLite, prompts for student name, loads-or-creates the row, hands off to `ConsultantAgent`.
-2. `consultant/agent.py` — owns the message list. `_run_turn()` may iterate multiple times when the model wants tools; it exits the inner loop only when `stop_reason != "tool_use"`. After every turn it persists both the conversation and the profile to the DB.
-3. `consultant/tools.py` — defines the tools and the dispatcher. Profile/artifact tools: `update_profile`, `save_artifact`, `list_artifacts`, `read_artifact`. University-knowledge-base tools: `list_universities`, `search_universities`, `get_university`. `update_profile` does a shallow per-key merge so nested objects (`academics`, `test_scores`, …) accumulate rather than overwrite.
-4. `consultant/prompts.py` — the single source of truth for agent behavior: conversation style, what to learn, when to produce the four deliverables. **This is the file to edit when the agent asks weak questions or jumps to recommendations too early.**
+1. `main.py` — boots SQLite, prompts for name + role, then either loads-or-creates the customer's row or (for staff) runs `_staff_select_case` to pick an initial case, and hands off to `ConsultantAgent` with the role.
+2. `consultant/agent.py` — owns the message list. `_run_turn()` may iterate multiple times when the model wants tools; it exits the inner loop only when `stop_reason != "tool_use"`. It persists conversation + profile after a turn **only when `persist_conversation`** (customer) and a case is open. Role selects the system prompt, the tool catalog (`self.tools`), and `_visible_profile()` filtering.
+3. `consultant/tools.py` — defines the tools and the dispatcher. Each tool carries a `roles` tuple; `tools_for_role(role)` filters the catalog for the model and `dispatch_tool(..., role)` re-checks on every call. Customer tools: `update_profile`, `save_artifact`, `list_artifacts`, `read_artifact`, KB reads. Staff add `list_cases`, `open_case`, `delete_profile_keys`, `add_internal_note`, `delete_artifact`; admin adds `refresh_university`, `remove_university`. `update_profile` does a shallow per-key merge so nested objects (`academics`, `test_scores`, …) accumulate rather than overwrite. `_CASE_TOOLS` is the set that requires an open case.
+4. `consultant/prompts.py` — the source of truth for agent behavior, one prompt per role (`SYSTEM_PROMPT` for customer, `SUPERVISOR_PROMPT`, `ADMIN_PROMPT`), selected by `system_prompt_for`. **This is the file to edit when an agent asks weak questions, jumps to recommendations too early, or a staff role needs different guidance.**
 5. `consultant/universities.py` — local cache + index over the goal-kicker top-100 US universities knowledge base (https://github.com/JackHanUTSA/goal-kicker). First call downloads all 100 `*.json` records to `consultant/data/universities/`; subsequent calls read from disk. The cache directory is gitignored. `_trim()` drops the bulky `school_people` block before handing records to the agent, keeping tool results around 8 KB instead of 80 KB.
-6. `consultant/db.py` — `students` table holds `profile_json` + `conversation_json` for resume-on-restart. The student's folder path is on the row so renames stay consistent.
+6. `consultant/db.py` — `students` table holds `profile_json` + `conversation_json` for resume-on-restart. The student's folder path is on the row so renames stay consistent. `get_student` is a no-create lookup (used by `open_case` and staff case selection); `list_students` now also reports `profile_keys` per case.
 
 ## Two things that will bite you
 
