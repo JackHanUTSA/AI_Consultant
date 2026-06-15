@@ -306,7 +306,9 @@ def dispatch_tool(name: str, args: dict, student: dict, db, role: str = "custome
     if name == "remove_university":
         return json.dumps(_universities().remove(args["slug"]))
 
-    folder = Path(student["folder"])
+    # Past here, every tool that uses `folder` is in _CASE_TOOLS and was already
+    # guarded above, so a case (and folder) is guaranteed present when needed.
+    folder = Path(student["folder"]) if student.get("folder") else None
 
     if name == "delete_profile_keys":
         keys = args.get("keys") or []

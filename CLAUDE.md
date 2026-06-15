@@ -14,6 +14,15 @@ python main.py
 
 Set `PROVIDER` in `.env` to `anthropic` (default) or `openai`, and provide the matching API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). On every run you enter a name and pick a **role** (plain prompt, no auth). For `customer` the student is resolved by name and the same name resumes the case from `consultant.db`.
 
+## Test (`simulate.py`)
+
+```
+python simulate.py        # offline role simulation; exits non-zero on any failure
+python simulate.py -v
+```
+
+`simulate.py` drives the **real** agent loop for each role with a `FakeAnthropicClient` that replays a script of tool calls (no LLM API, no network, throwaway temp DB + temp KB). It asserts the role invariants: tool-catalog filtering, dispatcher gating, profile merge/override persistence, ephemeral staff sessions, `_internal_notes` hidden from the customer agent, `open_case` swapping, and KB admin (`refresh_university`/`remove_university`) on an injected temp `UniversityDB`. Run it after any change to roles, tools, prompts, or persistence. To add a scenario: seed fixtures, build a `ConsultantAgent` for the role, and drive it with `run_agent_turn(agent, user_text, turns)` where each turn is `{"tools": [(name, input), ...]}` or `{"text": "..."}`.
+
 ## Roles
 
 Three session roles, chosen at startup. The role drives three things: which **system prompt** is used (`prompts.system_prompt_for`), which **tools** the model can see and call (`tools.tools_for_role`, re-checked in `dispatch_tool`), and whether the **conversation persists**.
